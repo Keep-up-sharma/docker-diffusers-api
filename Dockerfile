@@ -1,12 +1,14 @@
 # Banana requires Cuda version 11+.  Below is banana default:
-# FROM pytorch/pytorch:1.11.0-cuda11.3-cudnn8-devel as base
+# ARG FROM_IMAGE="pytorch/pytorch:1.11.0-cuda11.3-cudnn8-runtime"
 # xformers available precompiled for:
 #   Python 3.9 or 3.10, CUDA 11.3 or 11.6, and PyTorch 1.12.1
 #   https://github.com/facebookresearch/xformers/#getting-started
 # Below: pytorch base images only have Python 3.7 :(
-FROM pytorch/pytorch:1.12.1-cuda11.3-cudnn8-runtime as base
+ARG FROM_IMAGE="pytorch/pytorch:1.12.1-cuda11.3-cudnn8-runtime"
 # Below: our ideal image, but Optimization fails with it.
-#FROM continuumio/miniconda3:4.12.0 as base
+# ARG FROM_IMAGE="continuumio/miniconda3:4.12.0"
+FROM ${FROM_IMAGE} as base
+ENV FROM_IMAGE=${FROM_IMAGE}
 
 # Note, docker uses HTTP_PROXY and HTTPS_PROXY (uppercase)
 # We purposefully want those managed independently, as we want docker
@@ -27,7 +29,9 @@ ENV REQUESTS_CA_BUNDLE=${http_proxy:+/usr/local/share/ca-certificates/squid-self
 ENV DEBIAN_FRONTEND=noninteractive
 #RUN apt-get install gnupg2
 #RUN apt-key adv --keyserver keyserver.ubuntu.com --recv-keys A4B469963BF863CC
-RUN apt-get update && apt-get install -yqq git
+RUN apt-get update
+RUN apt-get install -yqq git
+RUN apt-get install -yqq zstd
 
 # This would have been great but Python is via conda,
 # and conda doesn't support python >= 3.7 for base.
@@ -72,9 +76,12 @@ RUN pip install -r requirements.txt
 # https://arnon.dk/matching-sm-architectures-arch-and-gencode-for-various-nvidia-cards/
 # ENV TORCH_CUDA_ARCH_LIST="7.5 8.0 8.6"
 
-RUN git clone https://github.com/huggingface/diffusers
-WORKDIR /api/diffusers
-RUN git checkout v0.9.0
+# Make sure our cache is up-to-date
+# ADD https://api.github.com/repos/huggingface/diffusers/git/refs/heads/main version.json
+
+RUN git clone https://github.com/huggingface/diffusers && cd diffusers && git checkout eb1abee693104dd45376dbddd614320f2a0beb24
+# WORKDIR /api/diffusers
+# RUN git checkout eb1abee693104dd45376dbddd614320f2a0beb24
 WORKDIR /api
 RUN pip install -e diffusers
 
@@ -132,13 +139,16 @@ ARG CHECKPOINT_URL=""
 ENV CHECKPOINT_URL=${CHECKPOINT_URL}
 ARG CHECKPOINT_CONFIG_URL=""
 ENV CHECKPOINT_CONFIG_URL=${CHECKPOINT_CONFIG_URL}
+# Set to true to NOT download model at build time, rather at init / usage.
+ARG RUNTIME_DOWNLOADS=0
+ENV RUNTIME_DOWNLOADS=${RUNTIME_DOWNLOADS}
 
 ADD download-checkpoint.py .
-RUN python3 download-checkpoint.py
+RUN if [ "$RUNTIME_DOWNLOADS" = "0" ]; then python3 download-checkpoint.py; fi
 ARG _CONVERT_SPECIAL
 ENV _CONVERT_SPECIAL=${_CONVERT_SPECIAL}
 ADD convert-to-diffusers.py .
-RUN python3 convert-to-diffusers.py
+RUN if [ "$RUNTIME_DOWNLOADS" = "0" ]; then python3 convert-to-diffusers.py; fi
 # RUN rm -rf checkpoints
 
 # Add your model weight files 
@@ -146,7 +156,7 @@ RUN python3 convert-to-diffusers.py
 ADD getScheduler.py .
 ADD loadModel.py .
 ADD download.py .
-RUN python3 download.py
+RUN if [ "$RUNTIME_DOWNLOADS" = "0" ] ; then python3 download.py ; fi
 
 # Deps for RUNNING (not building) earlier options
 ARG USE_PATCHMATCH=0
@@ -163,6 +173,7 @@ RUN if [ "$USE_DREAMBOOTH" = "1" ] ; then apt-get install git-lfs ; fi
 # Add your custom app code, init() and inference()
 ADD train_dreambooth.py .
 ADD send.py .
+ADD getPipeline.py .
 ADD app.py .
 
 ARG SEND_URL
